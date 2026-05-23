@@ -1,7 +1,8 @@
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
-from app import create_app, utcnow
+from app import create_app
 
 
 class TicketingAppTestCase(unittest.TestCase):
@@ -15,11 +16,6 @@ class TicketingAppTestCase(unittest.TestCase):
             headers={"X-User-Email": email},
             json={"priority": "High", "category": "VPN Issues", "description": description},
         )
-
-    def set_ticket_sla_window(self, ticket_id: int, created_offset: timedelta, resolution_window: timedelta):
-        ticket = self.app.tickets[ticket_id]
-        ticket["created_at"] = utcnow() - created_offset
-        ticket["sla_due_time"] = ticket["created_at"] + resolution_window
 
     def test_multi_tenant_isolation_between_organizations(self):
         create_response = self.create_ticket("alice@bluvium.com")
@@ -41,20 +37,46 @@ class TicketingAppTestCase(unittest.TestCase):
         self.assertEqual(update.status_code, 403)
 
     def test_sla_indicator_changes_from_yellow_to_red(self):
-        created = self.create_ticket("alice@bluvium.com")
-        ticket_id = created.get_json()["ticket_id"]
-        self.set_ticket_sla_window(
-            ticket_id=ticket_id,
-            created_offset=timedelta(hours=3, minutes=50),
-            resolution_window=timedelta(hours=4),
-        )
+        base_time = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc)
+        with patch("app.utcnow", return_value=base_time):
+            created = self.create_ticket("alice@bluvium.com")
+            self.assertEqual(created.status_code, 201)
 
-        near_breach = self.client.get("/api/tickets", headers={"X-User-Email": "bob@bluvium.com"})
+        with patch("app.utcnow", return_value=base_time + timedelta(hours=3, minutes=50)):
+            near_breach = self.client.get("/api/tickets", headers={"X-User-Email": "bob@bluvium.com"})
         self.assertEqual(near_breach.get_json()["tickets"][0]["sla_indicator"], "Yellow")
 
-        self.app.tickets[ticket_id]["sla_due_time"] = utcnow() - timedelta(minutes=1)
-        breached = self.client.get("/api/tickets", headers={"X-User-Email": "bob@bluvium.com"})
+        with patch("app.utcnow", return_value=base_time + timedelta(hours=4, minutes=1)):
+            breached = self.client.get("/api/tickets", headers={"X-User-Email": "bob@bluvium.com"})
         self.assertEqual(breached.get_json()["tickets"][0]["sla_indicator"], "Red")
+
+    def test_manager_kpis_include_mttr_and_sla_metrics(self):
+        base_time = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc)
+        with patch("app.utcnow", return_value=base_time):
+            first = self.create_ticket("alice@bluvium.com", "Email issue")
+            second = self.create_ticket("alice@bluvium.com", "Access issue")
+            self.assertEqual(first.status_code, 201)
+            self.assertEqual(second.status_code, 201)
+
+        ticket_id = first.get_json()["ticket_id"]
+        with patch("app.utcnow", return_value=base_time + timedelta(hours=1)):
+            resolve = self.client.patch(
+                f"/api/tickets/{ticket_id}/status",
+                headers={"X-User-Email": "bob@bluvium.com"},
+                json={"status": "Resolved"},
+            )
+        self.assertEqual(resolve.status_code, 200)
+
+        with patch("app.utcnow", return_value=base_time + timedelta(hours=5)):
+            kpis = self.client.get("/api/manager/kpis", headers={"X-User-Email": "maria@bluvium.com"})
+        self.assertEqual(kpis.status_code, 200)
+        body = kpis.get_json()
+        self.assertEqual(body["total_tickets"], 2)
+        self.assertEqual(body["closed_tickets"], 1)
+        self.assertEqual(body["open_tickets"], 1)
+        self.assertEqual(body["mttr_minutes"], 60.0)
+        self.assertEqual(body["sla_breach_percentage"], 50.0)
+        self.assertEqual(body["sla_compliance_percentage"], 50.0)
 
 
 if __name__ == "__main__":

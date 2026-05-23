@@ -95,7 +95,8 @@ def create_app() -> Flask:
 
     def require_role(user: dict[str, Any], allowed: set[str]) -> None:
         if user["role"] not in allowed:
-            abort(403, "Insufficient role")
+            allowed_roles = ", ".join(sorted(allowed))
+            abort(403, f"Insufficient role. Allowed roles: {allowed_roles}")
 
     @app.get("/")
     def home() -> str:
@@ -208,7 +209,7 @@ def create_app() -> Flask:
         org_tickets = [t for t in app.tickets.values() if t["organization_id"] == user["organization_id"]]
         total = len(org_tickets)
         closed = len([t for t in org_tickets if t["status"] in {STATUS_RESOLVED, STATUS_CLOSED}])
-        open_count = total - closed
+        open_count = len([t for t in org_tickets if t["status"] == STATUS_OPEN])
         breached = len([t for t in org_tickets if get_sla_indicator(t, now) == "Red"])
         resolved = [t for t in org_tickets if t["resolved_at"] is not None]
         mttr_minutes = 0.0
