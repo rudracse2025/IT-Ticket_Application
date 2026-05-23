@@ -76,8 +76,6 @@ def get_sla_indicator(ticket: dict[str, Any], now: datetime) -> str:
     if remaining.total_seconds() < 0:
         return "Red"
     total = ticket["sla_due_time"] - ticket["created_at"]
-    if total.total_seconds() <= 0:
-        return "Yellow"
     if remaining.total_seconds() <= total.total_seconds() * 0.2:
         return "Yellow"
     return "Green"
@@ -239,4 +237,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
